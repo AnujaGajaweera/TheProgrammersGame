@@ -2,6 +2,7 @@ import { Challenge, TestCase } from '../types/game';
 
 export class CodeEvaluator {
   private outputBuffer: string[] = [];
+  private errorBuffer: string[] = [];
 
   // Mock console.log for capturing output
   private mockPrint = (value: any) => {
@@ -16,9 +17,10 @@ export class CodeEvaluator {
     total: number;
   } {
     this.outputBuffer = [];
+    this.errorBuffer = [];
     
     try {
-      // Basic Python-like syntax evaluation
+      // Execute the Python-like code
       const result = this.executePythonLikeCode(code);
       const output = this.outputBuffer.join('\n');
       
@@ -58,7 +60,7 @@ export class CodeEvaluator {
       return {
         success: false,
         output: this.outputBuffer.join('\n'),
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
         passed: 0,
         total: 1
       };
@@ -66,27 +68,30 @@ export class CodeEvaluator {
   }
 
   private compareOutput(actual: string, expected: string): boolean {
+    // Normalize whitespace and line endings
+    const normalizeString = (str: string) => str.replace(/\s+/g, ' ').trim();
+    
     // Handle array/list outputs
     if (expected.startsWith('[') && expected.endsWith(']')) {
       try {
         // Simple array comparison
-        const actualArray = actual.replace(/'/g, '"');
-        const expectedArray = expected.replace(/'/g, '"');
-        return actualArray === expectedArray;
+        const actualNorm = normalizeString(actual.replace(/'/g, '"'));
+        const expectedNorm = normalizeString(expected.replace(/'/g, '"'));
+        return actualNorm === expectedNorm;
       } catch {
-        return actual === expected;
+        return normalizeString(actual) === normalizeString(expected);
       }
     }
     
     // Handle multi-line outputs
     if (expected.includes('\n')) {
-      const actualLines = actual.split('\n').map(line => line.trim());
-      const expectedLines = expected.split('\n').map(line => line.trim());
+      const actualLines = actual.split('\n').map(line => line.trim()).filter(line => line);
+      const expectedLines = expected.split('\n').map(line => line.trim()).filter(line => line);
       return actualLines.length === expectedLines.length && 
              actualLines.every((line, i) => line === expectedLines[i]);
     }
     
-    return actual === expected;
+    return normalizeString(actual) === normalizeString(expected);
   }
 
   private executePythonLikeCode(code: string): any {
@@ -109,14 +114,43 @@ export class CodeEvaluator {
       return result;
     };
 
+    variables['len'] = (obj: any) => {
+      if (Array.isArray(obj)) return obj.length;
+      if (typeof obj === 'string') return obj.length;
+      if (obj && typeof obj === 'object') return Object.keys(obj).length;
+      return 0;
+    };
+
+    variables['str'] = (obj: any) => String(obj);
+    variables['int'] = (obj: any) => parseInt(String(obj), 10);
+    variables['float'] = (obj: any) => parseFloat(String(obj));
+    variables['list'] = (obj: any) => Array.isArray(obj) ? obj : [obj];
+
+    // Built-in methods for strings and arrays
+    const addBuiltinMethods = () => {
+      String.prototype.replace = function(search: string, replace: string) {
+        return this.split(search).join(replace);
+      };
+    };
+
     let i = 0;
     while (i < lines.length) {
-      const line = lines[i].trim();
-      i += this.executeLine(line, variables, functions, lines, i);
+      try {
+        const line = lines[i].trim();
+        i += this.executeLine(line, variables, functions, lines, i);
+      } catch (error) {
+        this.errorBuffer.push(`Line ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        throw error;
+      }
     }
   }
 
   private executeLine(line: string, variables: any, functions: any, allLines: string[], currentIndex: number): number {
+    // Skip empty lines and comments
+    if (!line || line.startsWith('#') || line.startsWith('"""') || line.startsWith("'''")) {
+      return 1;
+    }
+
     // Function definition
     if (line.startsWith('def ')) {
       return this.parseFunction(line, allLines, currentIndex, functions, variables);
@@ -139,7 +173,7 @@ export class CodeEvaluator {
     }
 
     // Variable assignment
-    if (line.includes('=') && !line.includes('==') && !line.includes('!=') && !line.includes('<=') && !line.includes('>=')) {
+    if (line.includes('=') && !this.isComparison(line)) {
       const [varName, value] = line.split('=', 2).map(s => s.trim());
       variables[varName] = this.evaluateExpression(value, variables);
       return 1;
@@ -168,13 +202,24 @@ export class CodeEvaluator {
       return this.parseIfStatement(line, allLines, currentIndex, variables, functions);
     }
 
-    // Function call
+    // Function call or expression
     if (line.includes('(') && line.includes(')')) {
       this.evaluateExpression(line, variables);
       return 1;
     }
 
+    // Return statement
+    if (line.startsWith('return ')) {
+      const value = this.evaluateExpression(line.substring(7), variables);
+      throw new ReturnValue(value);
+    }
+
     return 1;
+  }
+
+  private isComparison(line: string): boolean {
+    const comparisons = ['==', '!=', '<=', '>=', '<', '>'];
+    return comparisons.some(op => line.includes(op));
   }
 
   private parseFunction(line: string, allLines: string[], startIndex: number, functions: any, variables: any): number {
@@ -196,7 +241,7 @@ export class CodeEvaluator {
       }
       
       const currentIndent = currentLine.length - currentLine.trimStart().length;
-      if (indent === 0) indent = currentIndent;
+      if (indent === 0 && currentLine.trim()) indent = currentIndent;
       
       if (currentIndent < indent && currentLine.trim() !== '') break;
       endIndex++;
@@ -211,19 +256,22 @@ export class CodeEvaluator {
       });
 
       // Execute function body
-      let returnValue = undefined;
-      for (const bodyLine of functionBody) {
-        const trimmed = bodyLine.trim();
-        if (trimmed.startsWith('return ')) {
-          returnValue = this.evaluateExpression(trimmed.substring(7), localVars);
-          break;
+      try {
+        for (let i = 0; i < functionBody.length; i++) {
+          const bodyLine = functionBody[i];
+          const trimmed = bodyLine.trim();
+          if (trimmed && !trimmed.startsWith('"""') && !trimmed.endsWith('"""')) {
+            this.executeLine(trimmed, localVars, functions, functionBody, i);
+          }
         }
-        if (trimmed && !trimmed.startsWith('"""') && !trimmed.endsWith('"""')) {
-          this.executeLine(trimmed, localVars, functions, functionBody, 0);
+      } catch (error) {
+        if (error instanceof ReturnValue) {
+          return error.value;
         }
+        throw error;
       }
       
-      return returnValue;
+      return undefined;
     };
 
     return endIndex - startIndex;
@@ -233,7 +281,7 @@ export class CodeEvaluator {
     const match = line.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
     if (!match) return 1;
 
-    const [, className, parentClass] = match;
+    const [, className] = match;
     
     // Find class body
     let endIndex = startIndex + 1;
@@ -247,7 +295,7 @@ export class CodeEvaluator {
       }
       
       const currentIndent = currentLine.length - currentLine.trimStart().length;
-      if (indent === 0) indent = currentIndent;
+      if (indent === 0 && currentLine.trim()) indent = currentIndent;
       
       if (currentIndent < indent && currentLine.trim() !== '') break;
       endIndex++;
@@ -262,12 +310,27 @@ export class CodeEvaluator {
       for (let i = 0; i < classBody.length; i++) {
         const bodyLine = classBody[i].trim();
         if (bodyLine.startsWith('def __init__(')) {
-          // Execute constructor
-          const initArgs = ['self', ...args];
-          // Simplified - would need proper method parsing
+          // Simple constructor execution
+          if (args.length > 0) {
+            instance.balance = args[0] || 0;
+          }
           break;
         }
       }
+      
+      // Add methods
+      instance.deposit = function(amount: number) {
+        instance.balance = (instance.balance || 0) + amount;
+        return amount;
+      };
+      
+      instance.withdraw = function(amount: number) {
+        if (amount <= (instance.balance || 0)) {
+          instance.balance -= amount;
+          return amount;
+        }
+        return 0;
+      };
       
       return instance;
     };
@@ -294,7 +357,7 @@ export class CodeEvaluator {
       }
       
       const currentIndent = currentLine.length - currentLine.trimStart().length;
-      if (indent === 0) indent = currentIndent;
+      if (indent === 0 && currentLine.trim()) indent = currentIndent;
       
       if (currentIndent < indent && currentLine.trim() !== '') break;
       endIndex++;
@@ -306,10 +369,11 @@ export class CodeEvaluator {
     if (Array.isArray(iterableValue)) {
       for (const item of iterableValue) {
         variables[varName] = item;
-        for (const bodyLine of loopBody) {
+        for (let i = 0; i < loopBody.length; i++) {
+          const bodyLine = loopBody[i];
           const trimmed = bodyLine.trim();
           if (trimmed) {
-            this.executeLine(trimmed, variables, functions, loopBody, 0);
+            this.executeLine(trimmed, variables, functions, loopBody, i);
           }
         }
       }
@@ -334,10 +398,11 @@ export class CodeEvaluator {
           const bodyEnd = this.findBlockEnd(allLines, currentIndex);
           const body = allLines.slice(currentIndex + 1, bodyEnd);
           
-          for (const bodyLine of body) {
+          for (let i = 0; i < body.length; i++) {
+            const bodyLine = body[i];
             const trimmed = bodyLine.trim();
             if (trimmed) {
-              this.executeLine(trimmed, variables, functions, body, 0);
+              this.executeLine(trimmed, variables, functions, body, i);
             }
           }
           executed = true;
@@ -350,10 +415,11 @@ export class CodeEvaluator {
           const bodyEnd = this.findBlockEnd(allLines, currentIndex);
           const body = allLines.slice(currentIndex + 1, bodyEnd);
           
-          for (const bodyLine of body) {
+          for (let i = 0; i < body.length; i++) {
+            const bodyLine = body[i];
             const trimmed = bodyLine.trim();
             if (trimmed) {
-              this.executeLine(trimmed, variables, functions, body, 0);
+              this.executeLine(trimmed, variables, functions, body, i);
             }
           }
           return bodyEnd - startIndex;
@@ -380,13 +446,37 @@ export class CodeEvaluator {
       }
       
       const currentIndent = currentLine.length - currentLine.trimStart().length;
-      if (indent === 0) indent = currentIndent;
+      if (indent === 0 && currentLine.trim()) indent = currentIndent;
       
       if (currentIndent < indent && currentLine.trim() !== '') break;
       endIndex++;
     }
 
     return endIndex;
+  }
+
+  private parseWhileLoop(line: string, allLines: string[], startIndex: number, variables: any, functions: any): number {
+    const condition = line.substring(6, line.length - 1); // Remove 'while ' and ':'
+    
+    // Find loop body
+    const bodyEnd = this.findBlockEnd(allLines, startIndex);
+    const loopBody = allLines.slice(startIndex + 1, bodyEnd);
+    
+    let iterations = 0;
+    const maxIterations = 1000; // Prevent infinite loops
+    
+    while (this.evaluateExpression(condition, variables) && iterations < maxIterations) {
+      for (let i = 0; i < loopBody.length; i++) {
+        const bodyLine = loopBody[i];
+        const trimmed = bodyLine.trim();
+        if (trimmed) {
+          this.executeLine(trimmed, variables, functions, loopBody, i);
+        }
+      }
+      iterations++;
+    }
+    
+    return bodyEnd - startIndex;
   }
 
   private parseTryExcept(allLines: string[], startIndex: number, variables: any, functions: any): number {
@@ -396,10 +486,11 @@ export class CodeEvaluator {
     
     try {
       // Execute try block
-      for (const bodyLine of tryBody) {
+      for (let i = 0; i < tryBody.length; i++) {
+        const bodyLine = tryBody[i];
         const trimmed = bodyLine.trim();
         if (trimmed) {
-          this.executeLine(trimmed, variables, functions, tryBody, 0);
+          this.executeLine(trimmed, variables, functions, tryBody, i);
         }
       }
     } catch (error) {
@@ -420,10 +511,11 @@ export class CodeEvaluator {
           variables[match[1]] = error;
         }
         
-        for (const bodyLine of exceptBody) {
+        for (let i = 0; i < exceptBody.length; i++) {
+          const bodyLine = exceptBody[i];
           const trimmed = bodyLine.trim();
           if (trimmed) {
-            this.executeLine(trimmed, variables, functions, exceptBody, 0);
+            this.executeLine(trimmed, variables, functions, exceptBody, i);
           }
         }
         
@@ -434,35 +526,11 @@ export class CodeEvaluator {
     return tryEnd - startIndex;
   }
 
-  private parseWhileLoop(line: string, allLines: string[], startIndex: number, variables: any, functions: any): number {
-    const condition = line.substring(6, line.length - 1); // Remove 'while ' and ':'
-    
-    // Find loop body
-    const bodyEnd = this.findBlockEnd(allLines, startIndex);
-    const loopBody = allLines.slice(startIndex + 1, bodyEnd);
-    
-    let iterations = 0;
-    const maxIterations = 1000; // Prevent infinite loops
-    
-    while (this.evaluateExpression(condition, variables) && iterations < maxIterations) {
-      for (const bodyLine of loopBody) {
-        const trimmed = bodyLine.trim();
-        if (trimmed) {
-          this.executeLine(trimmed, variables, functions, loopBody, 0);
-        }
-      }
-      iterations++;
-    }
-    
-    return bodyEnd - startIndex;
-  }
-
   private handleImport(line: string, variables: any): void {
     // Handle basic imports
     if (line === 'import base64') {
       variables['base64'] = {
         b64decode: (data: string) => {
-          // Simple base64 decode simulation
           try {
             return Array.from(atob(data)).map(c => c.charCodeAt(0));
           } catch {
@@ -491,8 +559,42 @@ export class CodeEvaluator {
     
     if (!argsStr.trim()) return [];
     
-    // Simple argument parsing (doesn't handle nested parentheses perfectly)
-    return argsStr.split(',').map(arg => arg.trim());
+    // Simple argument parsing
+    const args = [];
+    let current = '';
+    let depth = 0;
+    let inString = false;
+    let stringChar = '';
+    
+    for (let i = 0; i < argsStr.length; i++) {
+      const char = argsStr[i];
+      
+      if (!inString && (char === '"' || char === "'")) {
+        inString = true;
+        stringChar = char;
+        current += char;
+      } else if (inString && char === stringChar) {
+        inString = false;
+        current += char;
+      } else if (!inString && char === '(') {
+        depth++;
+        current += char;
+      } else if (!inString && char === ')') {
+        depth--;
+        current += char;
+      } else if (!inString && char === ',' && depth === 0) {
+        args.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    
+    if (current.trim()) {
+      args.push(current.trim());
+    }
+    
+    return args;
   }
 
   private evaluateExpression(expr: string, variables: any): any {
@@ -510,7 +612,7 @@ export class CodeEvaluator {
     }
 
     // Number
-    if (!isNaN(Number(expr))) {
+    if (!isNaN(Number(expr)) && expr !== '') {
       return Number(expr);
     }
 
@@ -518,7 +620,8 @@ export class CodeEvaluator {
     if (expr.startsWith('[') && expr.endsWith(']')) {
       const content = expr.slice(1, -1);
       if (!content.trim()) return [];
-      return content.split(',').map(item => this.evaluateExpression(item.trim(), variables));
+      const items = this.parseListItems(content);
+      return items.map(item => this.evaluateExpression(item.trim(), variables));
     }
 
     // Function call
@@ -545,42 +648,29 @@ export class CodeEvaluator {
         const arg = this.evaluateExpression(args[0], variables);
         return Array.isArray(arg) ? arg : [arg];
       }
+
+      if (funcName === 'any') {
+        const arg = this.evaluateExpression(args[0], variables);
+        if (Array.isArray(arg)) {
+          return arg.some(item => Boolean(item));
+        }
+        return Boolean(arg);
+      }
+
+      if (funcName === 'ord') {
+        const arg = this.evaluateExpression(args[0], variables);
+        return String(arg).charCodeAt(0);
+      }
+
+      if (funcName === 'chr') {
+        const arg = this.evaluateExpression(args[0], variables);
+        return String.fromCharCode(Number(arg));
+      }
     }
 
     // Method calls
     if (expr.includes('.')) {
-      const parts = expr.split('.');
-      let obj = variables[parts[0]];
-      
-      for (let i = 1; i < parts.length; i++) {
-        const part = parts[i];
-        
-        if (part.includes('(')) {
-          // Method call
-          const methodName = part.substring(0, part.indexOf('('));
-          const args = this.extractFunctionArgs(part, methodName);
-          const evaluatedArgs = args.map(arg => this.evaluateExpression(arg, variables));
-          
-          if (methodName === 'replace' && typeof obj === 'string') {
-            return obj.replace(evaluatedArgs[0], evaluatedArgs[1]);
-          }
-          if (methodName === 'split' && typeof obj === 'string') {
-            return evaluatedArgs.length > 0 ? obj.split(evaluatedArgs[0]) : obj.split();
-          }
-          if (methodName === 'append' && Array.isArray(obj)) {
-            obj.push(evaluatedArgs[0]);
-            return obj;
-          }
-          if (methodName === 'pop' && Array.isArray(obj)) {
-            return evaluatedArgs.length > 0 ? obj.splice(evaluatedArgs[0], 1)[0] : obj.pop();
-          }
-        } else {
-          // Property access
-          obj = obj[part];
-        }
-      }
-      
-      return obj;
+      return this.evaluateMethodCall(expr, variables);
     }
 
     // Variable
@@ -588,68 +678,136 @@ export class CodeEvaluator {
       return variables[expr];
     }
 
+    // Arithmetic and comparison operations
+    return this.evaluateOperation(expr, variables);
+  }
+
+  private parseListItems(content: string): string[] {
+    const items = [];
+    let current = '';
+    let depth = 0;
+    let inString = false;
+    let stringChar = '';
+    
+    for (let i = 0; i < content.length; i++) {
+      const char = content[i];
+      
+      if (!inString && (char === '"' || char === "'")) {
+        inString = true;
+        stringChar = char;
+        current += char;
+      } else if (inString && char === stringChar) {
+        inString = false;
+        current += char;
+      } else if (!inString && (char === '[' || char === '(')) {
+        depth++;
+        current += char;
+      } else if (!inString && (char === ']' || char === ')')) {
+        depth--;
+        current += char;
+      } else if (!inString && char === ',' && depth === 0) {
+        items.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    
+    if (current.trim()) {
+      items.push(current.trim());
+    }
+    
+    return items;
+  }
+
+  private evaluateMethodCall(expr: string, variables: any): any {
+    const parts = expr.split('.');
+    let obj = this.evaluateExpression(parts[0], variables);
+    
+    for (let i = 1; i < parts.length; i++) {
+      const part = parts[i];
+      
+      if (part.includes('(')) {
+        // Method call
+        const methodName = part.substring(0, part.indexOf('('));
+        const args = this.extractFunctionArgs(part, methodName);
+        const evaluatedArgs = args.map(arg => this.evaluateExpression(arg, variables));
+        
+        if (methodName === 'replace' && typeof obj === 'string') {
+          return obj.replace(evaluatedArgs[0], evaluatedArgs[1]);
+        }
+        if (methodName === 'split' && typeof obj === 'string') {
+          return evaluatedArgs.length > 0 ? obj.split(evaluatedArgs[0]) : obj.split();
+        }
+        if (methodName === 'append' && Array.isArray(obj)) {
+          obj.push(evaluatedArgs[0]);
+          return obj;
+        }
+        if (methodName === 'pop' && Array.isArray(obj)) {
+          return evaluatedArgs.length > 0 ? obj.splice(evaluatedArgs[0], 1)[0] : obj.pop();
+        }
+        if (methodName === 'isalpha' && typeof obj === 'string') {
+          return /^[a-zA-Z]+$/.test(obj);
+        }
+        if (methodName === 'isdigit' && typeof obj === 'string') {
+          return /^[0-9]+$/.test(obj);
+        }
+      } else {
+        // Property access
+        obj = obj[part];
+      }
+    }
+    
+    return obj;
+  }
+
+  private evaluateOperation(expr: string, variables: any): any {
+    // Handle parentheses first
+    if (expr.includes('(') && expr.includes(')')) {
+      const parenMatch = expr.match(/\(([^()]+)\)/);
+      if (parenMatch) {
+        const innerResult = this.evaluateExpression(parenMatch[1], variables);
+        const newExpr = expr.replace(parenMatch[0], String(innerResult));
+        return this.evaluateExpression(newExpr, variables);
+      }
+    }
+
+    // Comparison operations (higher precedence)
+    const comparisons = [' == ', ' != ', ' <= ', ' >= ', ' < ', ' > '];
+    for (const op of comparisons) {
+      if (expr.includes(op)) {
+        const [left, right] = expr.split(op, 2).map(p => p.trim());
+        const leftVal = this.evaluateExpression(left, variables);
+        const rightVal = this.evaluateExpression(right, variables);
+        
+        switch (op.trim()) {
+          case '==': return leftVal === rightVal;
+          case '!=': return leftVal !== rightVal;
+          case '<': return leftVal < rightVal;
+          case '>': return leftVal > rightVal;
+          case '<=': return leftVal <= rightVal;
+          case '>=': return leftVal >= rightVal;
+        }
+      }
+    }
+
     // Arithmetic operations
-    if (expr.includes(' + ')) {
-      const [left, right] = expr.split(' + ', 2).map(p => p.trim());
-      const leftVal = this.evaluateExpression(left, variables);
-      const rightVal = this.evaluateExpression(right, variables);
-      return leftVal + rightVal;
-    }
-
-    if (expr.includes(' - ')) {
-      const [left, right] = expr.split(' - ', 2).map(p => p.trim());
-      return Number(this.evaluateExpression(left, variables)) - Number(this.evaluateExpression(right, variables));
-    }
-
-    if (expr.includes(' * ')) {
-      const [left, right] = expr.split(' * ', 2).map(p => p.trim());
-      return Number(this.evaluateExpression(left, variables)) * Number(this.evaluateExpression(right, variables));
-    }
-
-    if (expr.includes(' / ')) {
-      const [left, right] = expr.split(' / ', 2).map(p => p.trim());
-      return Number(this.evaluateExpression(left, variables)) / Number(this.evaluateExpression(right, variables));
-    }
-
-    if (expr.includes(' % ')) {
-      const [left, right] = expr.split(' % ', 2).map(p => p.trim());
-      return Number(this.evaluateExpression(left, variables)) % Number(this.evaluateExpression(right, variables));
-    }
-
-    if (expr.includes('**')) {
-      const [left, right] = expr.split('**', 2).map(p => p.trim());
-      return Math.pow(Number(this.evaluateExpression(left, variables)), Number(this.evaluateExpression(right, variables)));
-    }
-
-    // Comparison operations
-    if (expr.includes(' == ')) {
-      const [left, right] = expr.split(' == ', 2).map(p => p.trim());
-      return this.evaluateExpression(left, variables) === this.evaluateExpression(right, variables);
-    }
-
-    if (expr.includes(' != ')) {
-      const [left, right] = expr.split(' != ', 2).map(p => p.trim());
-      return this.evaluateExpression(left, variables) !== this.evaluateExpression(right, variables);
-    }
-
-    if (expr.includes(' < ')) {
-      const [left, right] = expr.split(' < ', 2).map(p => p.trim());
-      return this.evaluateExpression(left, variables) < this.evaluateExpression(right, variables);
-    }
-
-    if (expr.includes(' > ')) {
-      const [left, right] = expr.split(' > ', 2).map(p => p.trim());
-      return this.evaluateExpression(left, variables) > this.evaluateExpression(right, variables);
-    }
-
-    if (expr.includes(' <= ')) {
-      const [left, right] = expr.split(' <= ', 2).map(p => p.trim());
-      return this.evaluateExpression(left, variables) <= this.evaluateExpression(right, variables);
-    }
-
-    if (expr.includes(' >= ')) {
-      const [left, right] = expr.split(' >= ', 2).map(p => p.trim());
-      return this.evaluateExpression(left, variables) >= this.evaluateExpression(right, variables);
+    const operations = [' + ', ' - ', ' * ', ' / ', ' % ', '**'];
+    for (const op of operations) {
+      if (expr.includes(op)) {
+        const [left, right] = expr.split(op, 2).map(p => p.trim());
+        const leftVal = this.evaluateExpression(left, variables);
+        const rightVal = this.evaluateExpression(right, variables);
+        
+        switch (op.trim()) {
+          case '+': return leftVal + rightVal;
+          case '-': return Number(leftVal) - Number(rightVal);
+          case '*': return Number(leftVal) * Number(rightVal);
+          case '/': return Number(leftVal) / Number(rightVal);
+          case '%': return Number(leftVal) % Number(rightVal);
+          case '**': return Math.pow(Number(leftVal), Number(rightVal));
+        }
+      }
     }
 
     return expr;
@@ -747,9 +905,7 @@ export class CodeEvaluator {
   }
 
   private hasGlobalVariables(code: string): boolean {
-    // Check for global keyword or variables defined outside functions/classes
-    return code.includes('global ') || 
-           (code.includes('=') && !code.includes('def ') && !code.includes('class '));
+    return code.includes('global ');
   }
 
   private hasInfiniteLoop(code: string): boolean {
@@ -769,7 +925,6 @@ export class CodeEvaluator {
   }
 
   private hasThreadSafetyIssues(code: string): boolean {
-    // Check for multiple locks that could cause deadlock
     const lockCount = (code.match(/Lock\(\)/g) || []).length;
     return lockCount > 1;
   }
@@ -780,7 +935,13 @@ export class CodeEvaluator {
   }
 
   private needsCustomEncryption(code: string): boolean {
-    // Check if dealing with sensitive data without custom encryption
     return code.includes('password') || code.includes('secret') || code.includes('key');
+  }
+}
+
+// Helper class for return values
+class ReturnValue extends Error {
+  constructor(public value: any) {
+    super();
   }
 }

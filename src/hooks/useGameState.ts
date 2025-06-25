@@ -51,6 +51,10 @@ export const useGameState = () => {
         sendAIResponse("🕵️‍♂️ Welcome to God Mode. You've proven yourself worthy. Now face the ultimate challenges.", 'classified');
       } else if (levelId >= 7) {
         sendAIResponse("⚡ Expert territory. Hope you brought your A-game because the rules are about to get ridiculous.", 'warning');
+      } else if (levelId === 0) {
+        sendAIResponse("Welcome to the practice arena! No pressure here, just get comfortable with the basics.", 'success');
+      } else {
+        sendAIResponse(`Level ${levelId} loaded. Time to show me what you've got!`, 'success');
       }
     }
   }, []);
@@ -67,6 +71,8 @@ export const useGameState = () => {
         currentChallenge: nextChallengeIndex,
         timeRemaining: nextChallenge?.timeLimit
       }));
+
+      sendAIResponse(`Challenge ${nextChallengeIndex + 1} of ${currentLevel.challenges.length} unlocked. Keep the momentum going!`, 'success');
     } else {
       // Level completed, unlock next level
       const nextLevelId = gameState.currentLevel + 1;
@@ -130,6 +136,8 @@ export const useGameState = () => {
       
       if (newLives === 0) {
         sendAIResponse("💀 GAME OVER! Your code has been consumed by the digital void. Restart to try again!", 'hack');
+      } else {
+        sendAIResponse(`💔 Life lost! ${newLives} lives remaining. Code more carefully!`, 'error');
       }
       
       return {
