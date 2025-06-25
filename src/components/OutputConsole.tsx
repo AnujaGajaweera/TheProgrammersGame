@@ -84,27 +84,27 @@ export const OutputConsole: React.FC<OutputConsoleProps> = ({
       >
         {isRunning && (
           <div className="text-blue-400 animate-pulse">
-            > Executing code...
+            &gt; Executing code...
           </div>
         )}
         
         {output && (
           <div className="whitespace-pre-wrap break-words">
-            <span className="text-gray-500">> </span>
+            <span className="text-gray-500">&gt; </span>
             {output}
           </div>
         )}
         
         {error && (
           <div className="text-red-400 mt-2 break-words">
-            <span className="text-gray-500">> ERROR: </span>
+            <span className="text-gray-500">&gt; ERROR: </span>
             {error}
           </div>
         )}
         
         {success && (
           <div className="text-green-400 mt-2">
-            <span className="text-gray-500">> </span>
+            <span className="text-gray-500">&gt; </span>
             ✓ Challenge completed successfully!
           </div>
         )}
@@ -112,7 +112,7 @@ export const OutputConsole: React.FC<OutputConsoleProps> = ({
         {/* Glitch Effect */}
         {glitchMode && (
           <div className="text-red-500 animate-pulse mt-2 break-words">
-            <span className="text-gray-500">> </span>
+            <span className="text-gray-500">&gt; </span>
             [CORRUPTED DATA DETECTED] [MALWARE INJECTION ATTEMPT]
           </div>
         )}
