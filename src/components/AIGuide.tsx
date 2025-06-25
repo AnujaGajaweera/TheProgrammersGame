@@ -36,9 +36,9 @@ export const AIGuide: React.FC<AIGuideProps> = ({ response, isHacked }) => {
   };
 
   const getIcon = () => {
-    if (isHacked) return <Skull className="w-6 h-6 text-red-500 animate-pulse" />;
-    if (response?.type === 'error') return <AlertTriangle className="w-6 h-6 text-red-500" />;
-    return <Bot className="w-6 h-6 text-green-500" />;
+    if (isHacked) return <Skull className="w-5 h-5 sm:w-6 sm:h-6 text-red-500 animate-pulse" />;
+    if (response?.type === 'error') return <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6 text-red-500" />;
+    return <Bot className="w-5 h-5 sm:w-6 sm:h-6 text-green-500" />;
   };
 
   const getMessageStyle = () => {
@@ -59,15 +59,15 @@ export const AIGuide: React.FC<AIGuideProps> = ({ response, isHacked }) => {
   };
 
   return (
-    <div className={`bg-gray-800 rounded-lg border-2 p-4 transition-all duration-300 ${
+    <div className={`bg-gray-800 rounded-lg border-2 p-3 sm:p-4 transition-all duration-300 ${
       isHacked ? 'border-red-500 bg-red-900/20' : 'border-gray-700'
     }`}>
-      <div className="flex items-start space-x-3">
+      <div className="flex items-start space-x-2 sm:space-x-3">
         {getIcon()}
         
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <div className="flex items-center space-x-2 mb-2">
-            <span className={`font-mono text-sm font-bold ${
+            <span className={`font-mono text-xs sm:text-sm font-bold ${
               isHacked ? 'text-red-500' : 'text-green-500'
             }`}>
               {getAIName()}
@@ -81,7 +81,7 @@ export const AIGuide: React.FC<AIGuideProps> = ({ response, isHacked }) => {
             )}
           </div>
           
-          <div className={`font-mono text-sm ${getMessageStyle()}`}>
+          <div className={`font-mono text-xs sm:text-sm ${getMessageStyle()} break-words`}>
             {currentMessage || (isHacked 
               ? "💀 I've been compromised! Your code is now property of the shadow realm!"
               : "Ready to help you write code that doesn't make senior developers cry."
